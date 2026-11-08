@@ -50,6 +50,7 @@ MYPATCHES=(
 	"chat-ids"
 	"increase-limits"
 	"ignore-restrictions"
+	"unblur"
 )
 USE_EXPAND_VALUES_TDESKTOP_PATCHES="${MYPATCHES[@]}"
 for p in ${MYPATCHES[@]}; do
@@ -78,6 +79,7 @@ COMMON_DEPEND="
 	enchant? ( app-text/enchant:= )
 	!fonts? ( media-fonts/open-sans )
 	hunspell? ( >=app-text/hunspell-1.7:= )
+	gui-libs/tlottie:=
 	kde-frameworks/kcoreaddons:6=
 	kde-frameworks/kimageformats:6=[avif,heif,jpegxl]
 	media-libs/fontconfig:=
@@ -86,8 +88,8 @@ COMMON_DEPEND="
 	media-libs/opus:=
 	media-libs/rnnoise:=
 	>=media-libs/tg_owt-0_pre20250501:=[pipewire(+)=,screencast=,X=]
-	media-libs/tlottie
 	media-video/ffmpeg:=[opus,vpx]
+	net-libs/wallet-engine-telegram:=
 	sys-apps/xdg-desktop-portal:=
 	virtual/minizip:=
 	virtual/opengl
@@ -258,6 +260,9 @@ src_prepare() {
 		cmark-gfm # FIXME: unbundle when it will be not so fucked
 		MicroTeX # XXX: maybe unbundle too?
 		TooManyCooks # XXX: also candiate for unbundling
+		twidget # Telegram-specific litehtml and widget renderer fork
+		widget-sandbox # Widget runtime and its nested QuickJS fork
+		zxcvbn # Bundled dictionary generator and password-strength engine
 	)
 	for x in Telegram/ThirdParty/*; do
 		has "${x##*/}" "${keep[@]}" || {
@@ -378,8 +383,15 @@ src_configure() {
 		# Unbundling:
 		-DDESKTOP_APP_USE_PACKAGED=ON # Main
 
+		# Gentoo's Telegram-patched wallet engine has a distinct
+		# library name and generated C++ bindings directory.
+		# Reference: https://raw.githubusercontent.com/gentoo/gentoo/master/net-im/telegram-desktop/telegram-desktop-7.3.5.ebuild
+		-DDESKTOP_APP_WALLET_ENGINE_LIBRARY="${ESYSROOT}/usr/$(get_libdir)/libwallet_engine-telegram.so"
+		-DDESKTOP_APP_WALLET_ENGINE_INCLUDE_DIR="${ESYSROOT}/usr/include/wallet_engine-telegram"
+
 		# -DDESKTOP_APP_DISABLE_X11_INTEGRATION=$(usex !X) # removed upstream
-		# -DDESKTOP_APP_DISABLE_WAYLAND_INTEGRATION="$(usex !wayland)" # also removed, but we add it by patch
+		# Restored by tdesktop-9999-qt6-no-wayland.patch.
+		-DDESKTOP_APP_DISABLE_WAYLAND_INTEGRATION="$(usex !wayland)"
 
 		$(usex lto "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON" '')
 
