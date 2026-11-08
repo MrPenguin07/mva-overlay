@@ -1,0 +1,509 @@
+diff --git a/Telegram/SourceFiles/history/view/media/history_view_gif.cpp b/Telegram/SourceFiles/history/view/media/history_view_gif.cpp
+index 80383d05b08dc4768583411fe32565adaa36fb62..c2b88d5723379684cd6c271fee41c04fb088b502 100644
+--- a/Telegram/SourceFiles/history/view/media/history_view_gif.cpp
++++ b/Telegram/SourceFiles/history/view/media/history_view_gif.cpp
+@@ -73,7 +73,6 @@ namespace HistoryView {
+ namespace {
+ 
+ constexpr auto kMaxGifForwardedBarLines = 4;
+-constexpr auto kUseNonBlurredThreshold = 240;
+ constexpr auto kMaxInlineArea = 1920 * 1080;
+ constexpr auto kMaxInstantViewInlineArea = 1920 * 1920;
+ constexpr auto kSeekPreviewInterval = crl::time(100);
+@@ -201,7 +200,8 @@ Gif::Gif(
+ 	: nullptr)
+ , _downloadSize(Ui::FormatSizeText(_data->size))
+ , _videoTimestamp(::Media::View::ExtractVideoTimestamp(realParent))
+-, _sensitiveSpoiler(realParent->isMediaSensitive())
++, _sensitiveSpoiler(realParent->isMediaSensitive()
++	&& IsHiddenRoundMessage(_parent))
+ , _ttlCover(realParent->isTtlCoveredMedia())
+ , _hasVideoCover(realParent->media() && realParent->media()->videoCover()) {
+ 	const auto media = _parent->data()->media();
+@@ -254,6 +254,7 @@ Gif::Gif(
+ 
+ 	if (_spoiler) {
+ 		createSpoilerLink(_spoiler.get());
++		hideSpoilers();
+ 	}
+ 
+ 	if ((_dataMedia = _data->activeMediaView())) {
+@@ -1227,7 +1228,7 @@ void Gif::validateThumbCache(
+ 	const auto normal = good
+ 		? good
+ 		: _videoCoverMedia
+-		? nullptr
++		? _videoCoverMedia->image(Data::PhotoSize::Small)
+ 		: _dataMedia->thumbnail();
+ 	if (!normal) {
+ 		if (_videoCoverMedia) {
+@@ -1240,18 +1241,18 @@ void Gif::validateThumbCache(
+ 	const auto videothumb = (normal || _videoCoverMedia)
+ 		? nullptr
+ 		: _videoThumbnailFrame.get();
+-	const auto blurred = normal
+-		? (!good
+-			&& (normal->width() < kUseNonBlurredThreshold)
+-			&& (normal->height() < kUseNonBlurredThreshold))
+-		: !videothumb;
++	const auto embedded = _videoCoverMedia
++		? _videoCoverMedia->thumbnailInline()
++		: _dataMedia->thumbnailInline();
++	const auto loadLevel = good ? 4 : normal ? 3 : videothumb ? 2
++		: embedded ? 1 : 0;
+ 	const auto ratio = style::DevicePixelRatio();
+ 	const auto scaled = ScaledInstantViewMediaSize(
+ 		outer,
+ 		HostedInstantViewMediaPixelScale(_parent));
+ 	if (_thumbCache.size() == (scaled * ratio)
+ 		&& _thumbCacheRounding == rounding
+-		&& _thumbCacheBlurred == blurred
++		&& _thumbCacheLoadLevel == loadLevel
+ 		&& _thumbIsEllipse == isEllipse) {
+ 		return;
+ 	}
+@@ -1260,7 +1261,7 @@ void Gif::validateThumbCache(
+ 		? Images::Circle(std::move(cache))
+ 		: Images::Round(std::move(cache), MediaRoundingMask(rounding));
+ 	_thumbCacheRounding = rounding;
+-	_thumbCacheBlurred = blurred;
++	_thumbCacheLoadLevel = loadLevel;
+ }
+ 
+ QImage Gif::prepareThumbCache(QSize outer) const {
+@@ -1270,37 +1271,22 @@ QImage Gif::prepareThumbCache(QSize outer) const {
+ 	const auto normal = good
+ 		? good
+ 		: _videoCoverMedia
+-		? nullptr
++		? _videoCoverMedia->image(Data::PhotoSize::Small)
+ 		: _dataMedia->thumbnail();
+ 	const auto videothumb = (normal || _videoCoverMedia)
+ 		? nullptr
+ 		: _videoThumbnailFrame.get();
+-	auto blurred = (!good
+-		&& normal
+-		&& (normal->width() < kUseNonBlurredThreshold)
+-		&& (normal->height() < kUseNonBlurredThreshold))
+-		? normal
+-		: nullptr;
+-	const auto blurFromLarge = good || (normal && !blurred);
+-	const auto large = blurFromLarge ? normal : videothumb;
+-	if (videothumb) {
+-	} else if (_videoCoverMedia) {
+-		if (const auto embedded = _videoCoverMedia->thumbnailInline()) {
+-			blurred = embedded;
+-		}
+-	} else if (const auto embedded = _dataMedia->thumbnailInline()) {
+-		blurred = embedded;
+-	}
+-	const auto resize = large
+-		? ::Media::Streaming::DecideVideoFrameResize(
+-			outer,
+-			good ? large->size() : _data->dimensions)
+-		: ::Media::Streaming::ExpandDecision();
+-	return PrepareWithBlurredBackground(
++	const auto embedded = _videoCoverMedia
++		? _videoCoverMedia->thumbnailInline()
++		: _dataMedia->thumbnailInline();
++	const auto image = normal ? normal : videothumb ? videothumb
++		: embedded ? embedded : Image::BlankMedia().get();
++	const auto resize = ::Media::Streaming::DecideVideoFrameResize(
+ 		outer,
+-		resize,
+-		large,
+-		blurFromLarge ? large : blurred);
++		(good || _videoCoverMedia || _data->dimensions.isEmpty())
++			? image->size()
++			: _data->dimensions);
++	return PrepareWithBlurredBackground(outer, resize, image, image);
+ }
+ 
+ void Gif::validateSpoilerImageCache(
+@@ -2104,7 +2090,8 @@ bool Gif::uploading() const {
+ 
+ void Gif::hideSpoilers() {
+ 	if (_spoiler) {
+-		_spoiler->revealed = false;
++		// Leave view-once playback/expiry handling unchanged.
++		_spoiler->revealed = !IsHiddenRoundMessage(_parent);
+ 	}
+ }
+ 
+@@ -2213,15 +2200,13 @@ void Gif::validateGroupedCache(
+ 		Ui::BubbleRounding rounding,
+ 		not_null<uint64*> cacheKey,
+ 		not_null<QPixmap*> cache) const {
+-	using Option = Images::Option;
+-
+ 	ensureDataMediaCreated();
+ 
+ 	const auto good = _videoCoverMedia
+ 		? _videoCoverMedia->image(Data::PhotoSize::Large)
+ 		: _dataMedia->goodThumbnail();
+ 	const auto thumb = _videoCoverMedia
+-		? nullptr
++		? _videoCoverMedia->image(Data::PhotoSize::Small)
+ 		: _dataMedia->thumbnail();
+ 	const auto image = good
+ 		? good
+@@ -2230,21 +2215,14 @@ void Gif::validateGroupedCache(
+ 		: _videoCoverMedia
+ 		? _videoCoverMedia->thumbnailInline()
+ 		: _dataMedia->thumbnailInline();
+-	const auto blur = !good
+-		&& (!thumb
+-			|| (thumb->width() < kUseNonBlurredThreshold
+-				&& thumb->height() < kUseNonBlurredThreshold));
+-
+ 	const auto loadLevel = good ? 3 : thumb ? 2 : image ? 1 : 0;
+ 	const auto scaled = ScaledInstantViewMediaSize(
+ 		geometry.size(),
+ 		HostedInstantViewMediaPixelScale(_parent));
+ 	const auto width = scaled.width();
+ 	const auto height = scaled.height();
+-	const auto options = (blur ? Option::Blur : Option(0));
+ 	const auto key = (uint64(width) << 48)
+ 		| (uint64(height) << 32)
+-		| (uint64(options) << 16)
+ 		| (uint64(rounding.key()) << 8)
+ 		| (uint64(loadLevel));
+ 	if (*cacheKey == key) {
+@@ -2263,7 +2241,7 @@ void Gif::validateGroupedCache(
+ 	auto prepared = Images::Prepare(
+ 		(image ? image : Image::BlankMedia().get())->original(),
+ 		pixSize * ratio,
+-		{ .options = options, .outer = { width, height } });
++		{ .outer = { width, height } });
+ 	auto rounded = Images::Round(
+ 		std::move(prepared),
+ 		MediaRoundingMask(rounding));
+diff --git a/Telegram/SourceFiles/history/view/media/history_view_gif.h b/Telegram/SourceFiles/history/view/media/history_view_gif.h
+index 40a63cf2f37bc6dab883339aa5127ab259a9969b..249e9b787b19de09ca36640e3940148238227d71 100644
+--- a/Telegram/SourceFiles/history/view/media/history_view_gif.h
++++ b/Telegram/SourceFiles/history/view/media/history_view_gif.h
+@@ -288,7 +288,7 @@ private:
+ 	mutable QImage _seekLastFrame;
+ 	mutable TimeId _videoTimestamp = 0;
+ 	mutable std::optional<Ui::BubbleRounding> _thumbCacheRounding;
+-	mutable bool _thumbCacheBlurred : 1 = false;
++	mutable uint8 _thumbCacheLoadLevel = 0;
+ 	mutable bool _thumbIsEllipse : 1 = false;
+ 	mutable bool _pollingStory : 1 = false;
+ 	mutable bool _purchasedPriceTag : 1 = false;
+diff --git a/Telegram/SourceFiles/history/view/media/history_view_photo.cpp b/Telegram/SourceFiles/history/view/media/history_view_photo.cpp
+index 4a563307fe671139f6113e093351e4363fe72ebc..f0d76ad9c8be2343e78133ed72c3f7c8dd540579 100644
+--- a/Telegram/SourceFiles/history/view/media/history_view_photo.cpp
++++ b/Telegram/SourceFiles/history/view/media/history_view_photo.cpp
+@@ -215,7 +215,8 @@ Photo::Photo(
+ , _spoiler((spoiler || realParent->isMediaSensitive())
+ 	? std::make_unique<MediaSpoiler>()
+ 	: nullptr)
+-, _sensitiveSpoiler(realParent->isMediaSensitive() ? 1 : 0)
++, _sensitiveSpoiler(realParent->isMediaSensitive()
++	&& (realParent->isTtlCoveredMedia() || photo->extendedMediaPreview()))
+ , _ttlCover(realParent->isTtlCoveredMedia() ? 1 : 0) {
+ 	create(realParent->fullId());
+ }
+@@ -267,6 +268,7 @@ void Photo::create(FullMsgId contextId, PeerData *chat) {
+ 	}
+ 	if (_spoiler) {
+ 		createSpoilerLink(_spoiler.get());
++		hideSpoilers();
+ 	}
+ 	_purchasedPriceTag = hasPurchasedTag() ? 1 : 0;
+ }
+@@ -663,21 +665,29 @@ void Photo::validateImageCache(
+ 		QSize outer,
+ 		std::optional<Ui::BubbleRounding> rounding) const {
+ 	const auto large = _dataMedia->image(PhotoSize::Large);
++	const auto loadLevel = large
++		? 4
++		: _dataMedia->image(PhotoSize::Thumbnail)
++		? 3
++		: _dataMedia->image(PhotoSize::Small)
++		? 2
++		: _dataMedia->thumbnailInline()
++		? 1
++		: 0;
+ 	const auto ratio = style::DevicePixelRatio();
+ 	const auto scaled = ScaledInstantViewMediaSize(
+ 		outer,
+ 		HostedInstantViewMediaPixelScale(_parent));
+-	const auto blurredValue = large ? 0 : 1;
+ 	if (_imageCache.size() == (scaled * ratio)
+ 		&& _imageCacheRounding == rounding
+-		&& _imageCacheBlurred == blurredValue) {
++		&& _imageCacheLoadLevel == loadLevel) {
+ 		return;
+ 	}
+ 	_imageCache = Images::Round(
+ 		prepareImageCache(scaled),
+ 		MediaRoundingMask(rounding));
+ 	_imageCacheRounding = rounding;
+-	_imageCacheBlurred = blurredValue;
++	_imageCacheLoadLevel = loadLevel;
+ }
+ 
+ void Photo::validateSpoilerImageCache(
+@@ -700,9 +710,19 @@ void Photo::validateSpoilerImageCache(
+ }
+ 
+ QImage Photo::prepareImageCache(QSize outer) const {
+-	return prepareImageCacheWithLarge(
++	const auto image = _dataMedia->image(PhotoSize::Large)
++		? _dataMedia->image(PhotoSize::Large)
++		: _dataMedia->image(PhotoSize::Thumbnail)
++		? _dataMedia->image(PhotoSize::Thumbnail)
++		: _dataMedia->image(PhotoSize::Small)
++		? _dataMedia->image(PhotoSize::Small)
++		: _dataMedia->thumbnailInline()
++		? _dataMedia->thumbnailInline()
++		: Image::BlankMedia().get();
++	const auto resize = ::Media::Streaming::DecideFrameResize(
+ 		outer,
+-		_dataMedia->image(PhotoSize::Large));
++		image->size());
++	return PrepareWithBlurredBackground(outer, resize, image, image);
+ }
+ 
+ QImage Photo::prepareImageCacheWithLarge(QSize outer, Image *large) const {
+@@ -1107,17 +1127,15 @@ void Photo::validateGroupedCache(
+ 		Ui::BubbleRounding rounding,
+ 		not_null<uint64*> cacheKey,
+ 		not_null<QPixmap*> cache) const {
+-	using Option = Images::Option;
+-
+ 	ensureDataMediaCreated();
+ 
+-	const auto preview = _data->extendedMediaPreview();
+-	const auto loaded = preview || _dataMedia->loaded();
+-	const auto loadLevel = loaded
++	const auto loadLevel = _dataMedia->image(PhotoSize::Large)
++		? 4
++		: _dataMedia->image(PhotoSize::Thumbnail)
++		? 3
++		: _dataMedia->image(PhotoSize::Small)
+ 		? 2
+-		: (_dataMedia->thumbnailInline()
+-			|| _dataMedia->image(PhotoSize::Small)
+-			|| _dataMedia->image(PhotoSize::Thumbnail))
++		: _dataMedia->thumbnailInline()
+ 		? 1
+ 		: 0;
+ 	const auto scaled = ScaledInstantViewMediaSize(
+@@ -1125,10 +1143,8 @@ void Photo::validateGroupedCache(
+ 		HostedInstantViewMediaPixelScale(_parent));
+ 	const auto width = scaled.width();
+ 	const auto height = scaled.height();
+-	const auto options = (loaded ? Option() : Option::Blur);
+ 	const auto key = (uint64(width) << 48)
+ 		| (uint64(height) << 32)
+-		| (uint64(options) << 16)
+ 		| (uint64(rounding.key()) << 8)
+ 		| (uint64(loadLevel));
+ 	if (*cacheKey == key) {
+@@ -1156,7 +1172,7 @@ void Photo::validateGroupedCache(
+ 	auto prepared = Images::Prepare(
+ 		image->original(),
+ 		pixSize * ratio,
+-		{ .options = options, .outer = { width, height } });
++		{ .outer = { width, height } });
+ 	auto rounded = Images::Round(
+ 		std::move(prepared),
+ 		MediaRoundingMask(rounding));
+@@ -1292,7 +1308,8 @@ bool Photo::videoAutoplayEnabled() const {
+ 
+ void Photo::hideSpoilers() {
+ 	if (_spoiler) {
+-		_spoiler->revealed = false;
++		// Keep paid/expiring media semantics, but never re-cover other media.
++		_spoiler->revealed = !_ttlCover && !_data->extendedMediaPreview();
+ 	}
+ }
+ 
+diff --git a/Telegram/SourceFiles/history/view/media/history_view_photo.h b/Telegram/SourceFiles/history/view/media/history_view_photo.h
+index 2724cbfafca3611757e0192433ad297cc92c6122..40ce8b02d010d0f88c4a4f898a0e63740c55de35 100644
+--- a/Telegram/SourceFiles/history/view/media/history_view_photo.h
++++ b/Telegram/SourceFiles/history/view/media/history_view_photo.h
+@@ -174,6 +174,7 @@ private:
+ 	const uint32 _ttlCover : 1 = 0;
+ 	mutable uint32 _imageCacheForum : 1 = 0;
+ 	mutable uint32 _imageCacheBlurred : 1 = 0;
++	mutable uint32 _imageCacheLoadLevel : 3 = 0;
+ 	mutable uint32 _pollingStory : 1 = 0;
+ 	mutable std::unique_ptr<Enlarge> _enlarge;
+ 
+diff --git a/Telegram/SourceFiles/overview/overview_layout.cpp b/Telegram/SourceFiles/overview/overview_layout.cpp
+index 9ba40066d9cf1e1547436bd25f2eb8eae90e8ab6..76157091ea2b32818b48c744a32eaff19c5d4771 100644
+--- a/Telegram/SourceFiles/overview/overview_layout.cpp
++++ b/Telegram/SourceFiles/overview/overview_layout.cpp
+@@ -397,29 +397,12 @@ Photo::Photo(
+ 	MediaOptions options)
+ : ItemBase(delegate, parent)
+ , _data(photo)
+-, _spoiler((options.spoiler || parent->isMediaSensitive())
+-	? std::make_unique<Ui::SpoilerAnimation>([=] {
+-		delegate->repaintItem(this);
+-	})
+-	: nullptr)
+-, _sensitiveSpoiler(parent->isMediaSensitive() ? 1 : 0)
+ , _story(options.story)
+ , _storyPinned(options.storyPinned)
+ , _storyShowPinned(options.storyShowPinned)
+ , _storyHidden(options.storyHidden)
+ , _storyShowHidden(options.storyShowHidden)
+-, _link(_sensitiveSpoiler
+-	? HistoryView::MakeSensitiveMediaLink(
+-		std::make_shared<LambdaClickHandler>(crl::guard(this, [=] {
+-			maybeClearSensitiveSpoiler();
+-		})),
+-		parent)
+-	: _spoiler
+-	? std::make_shared<LambdaClickHandler>(crl::guard(this, [=] {
+-		clearSpoiler();
+-		_link = makeOpenPhotoHandler();
+-	}))
+-	: makeOpenPhotoHandler()) {
++, _link(makeOpenPhotoHandler()) {
+ 	if (_data->inlineThumbnailBytes().isEmpty()
+ 		&& (_data->hasExact(Data::PhotoSize::Small)
+ 			|| _data->hasExact(Data::PhotoSize::Thumbnail))) {
+@@ -575,25 +558,7 @@ void Photo::goodPixReady(QImage image, uint32 id) {
+ void Photo::setPixFrom(not_null<Image*> image) {
+ 	Expects(_width > 0 && _height > 0);
+ 
+-	auto img = image->original();
+-
+-	// Blur allocates and detaches by the source pixel count, and 'image'
+-	// can be a full size photo, because image(PhotoSize::Small) falls back
+-	// to a larger size when no small one is available. So blur whichever of
+-	// the source and the result has fewer pixels: a huge photo is scaled
+-	// down first, while a small inline thumbnail is still blurred before it
+-	// is upscaled, which keeps the placeholder looking the way it did.
+-	const auto ratio = style::DevicePixelRatio();
+-	const auto blurAfterCrop = (img.width() * img.height())
+-		> ((_width * ratio) * (_height * ratio));
+-	if (!_goodLoaded && !blurAfterCrop) {
+-		img = Images::Blur(std::move(img));
+-	}
+-	img = CropMediaFrame(std::move(img), _width, _height);
+-	if (!_goodLoaded && blurAfterCrop) {
+-		img = Images::Blur(std::move(img));
+-	}
+-	_pix = std::move(img);
++	_pix = CropMediaFrame(image->original(), _width, _height);
+ 
+ 	// In case we have inline thumbnail we can unload all images and we still
+ 	// won't get a blank image in the media viewer when the photo is opened.
+@@ -665,31 +630,12 @@ Video::Video(
+ , _videoCover(LookupVideoCover(video, parent))
+ , _duration(Ui::FormatDurationText(_data->duration() / 1000))
+ , _durationw(st::normalFont->width(_duration))
+-, _spoiler((options.spoiler || parent->isMediaSensitive())
+-	? std::make_unique<Ui::SpoilerAnimation>([=] {
+-		delegate->repaintItem(this);
+-	})
+-	: nullptr)
+-, _sensitiveSpoiler(parent->isMediaSensitive() ? 1 : 0)
+ , _story(options.story)
+ , _storyPinned(options.storyPinned)
+ , _storyShowPinned(options.storyShowPinned)
+ , _storyHidden(options.storyHidden)
+ , _storyShowHidden(options.storyShowHidden) {
+ 	setDocumentLinks(_data);
+-	if (_sensitiveSpoiler) {
+-		_openl = HistoryView::MakeSensitiveMediaLink(
+-			std::make_shared<LambdaClickHandler>(crl::guard(this, [=] {
+-				clearSpoiler();
+-				setDocumentLinks(_data);
+-			})),
+-			parent);
+-	} else if (_spoiler) {
+-		_openl = std::make_shared<LambdaClickHandler>(crl::guard(this, [=] {
+-			clearSpoiler();
+-			setDocumentLinks(_data);
+-		}));
+-	}
+ 	if (!_videoCover) {
+ 		_data->loadThumbnail(parent->fullId());
+ 	} else if (_videoCover->inlineThumbnailBytes().isEmpty()
+@@ -754,20 +700,18 @@ void Video::paint(
+ 		!= _width * style::DevicePixelRatio());
+ 	if (widthChanged) {
+ 		_pix = QImage();
+-		_pixBlurred = true;
++		_pixLowQuality = true;
+ 		_goodRequested = false;
+ 	}
+ 	const auto better = good ? good : thumbnail;
+ 	if (_pix.isNull()) {
+ 		if (const auto source = blurred ? blurred : better) {
+-			auto img = (source == blurred)
+-				? Images::Blur(source->original())
+-				: source->original();
++			auto img = source->original();
+ 			_pix = CropMediaFrame(std::move(img), _width, _height);
+-			_pixBlurred = (source == blurred);
++			_pixLowQuality = (source == blurred);
+ 		}
+ 	}
+-	if (better && _pixBlurred) {
++	if (better && _pixLowQuality) {
+ 		requestGoodPix(better);
+ 	}
+ 
+@@ -905,7 +849,7 @@ void Video::goodPixReady(QImage image, uint32 id) {
+ 	}
+ 	_goodRequested = false;
+ 	_pix = std::move(image);
+-	_pixBlurred = false;
++	_pixLowQuality = false;
+ 	delegate()->repaintItem(this);
+ }
+ 
+@@ -2586,22 +2530,8 @@ Gif::Gif(
+ 	not_null<HistoryItem*> parent,
+ 	not_null<DocumentData*> gif)
+ : RadialProgressItem(delegate, parent)
+-, _data(gif)
+-, _spoiler(parent->isMediaSensitive()
+-	? std::make_unique<Ui::SpoilerAnimation>([=] {
+-		delegate->repaintItem(this);
+-	})
+-	: nullptr)
+-, _sensitiveSpoiler(parent->isMediaSensitive() ? 1 : 0) {
++, _data(gif) {
+ 	setDocumentLinks(_data, true);
+-	if (_sensitiveSpoiler) {
+-		_openl = HistoryView::MakeSensitiveMediaLink(
+-			std::make_shared<LambdaClickHandler>(crl::guard(this, [=] {
+-				clearSpoiler();
+-				setDocumentLinks(_data, true);
+-			})),
+-			parent);
+-	}
+ 	_data->loadThumbnail(parent->fullId());
+ }
+ 
+@@ -2742,7 +2672,6 @@ void Gif::validateThumbnail(
+ 	_thumb = image->pixNoCache(
+ 		frame * style::DevicePixelRatio(),
+ 		{
+-			.options = (good ? Images::Option() : Images::Option::Blur),
+ 			.outer = size,
+ 		}).toImage();
+ }
+diff --git a/Telegram/SourceFiles/overview/overview_layout.h b/Telegram/SourceFiles/overview/overview_layout.h
+index 872feef9e911d7a38670ba205cd210daad67fac3..d4811bfe52a7f093db19ad7a1ad3f4e3c996a070 100644
+--- a/Telegram/SourceFiles/overview/overview_layout.h
++++ b/Telegram/SourceFiles/overview/overview_layout.h
+@@ -373,7 +373,7 @@ private:
+ 	uint32 _goodRequestId = 0;
+ 	QImage _pix;
+ 	QImage _hiddenBgCache;
+-	bool _pixBlurred : 1 = true;
++	bool _pixLowQuality : 1 = true;
+ 	bool _goodRequested : 1 = false;
+ 	bool _sensitiveSpoiler : 1 = false;
+ 	bool _story : 1 = false;

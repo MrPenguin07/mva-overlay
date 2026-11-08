@@ -1,0 +1,333 @@
+diff --git a/Telegram/SourceFiles/data/data_story.cpp b/Telegram/SourceFiles/data/data_story.cpp
+index d5faa43..c6b26dc 100644
+--- a/Telegram/SourceFiles/data/data_story.cpp
++++ b/Telegram/SourceFiles/data/data_story.cpp
+@@ -399,12 +399,11 @@ bool Story::edited() const {
+ }
+ 
+ bool Story::canDownloadIfPremium() const {
+-	return !forbidsForward() || _peer->isSelf();
++	return true;
+ }
+ 
+ bool Story::canDownloadChecked() const {
+-	return _peer->isSelf()
+-		|| (canDownloadIfPremium() && _peer->session().premium());
++	return true;
+ }
+ 
+ bool Story::canShare() const {
+diff --git a/Telegram/SourceFiles/history/history_inner_widget.cpp b/Telegram/SourceFiles/history/history_inner_widget.cpp
+--- a/Telegram/SourceFiles/history/history_inner_widget.cpp
++++ b/Telegram/SourceFiles/history/history_inner_widget.cpp
+@@ -827,18 +827,7 @@
+ }
+ 
+ bool HistoryInner::hasSelectRestriction() const {
+-	if (_chooseForReportReason.has_value()) {
+-		return false;
+-	} else if (session().frozen()) {
+-		return true;
+-	} else if (!_sharingDisallowed.current()) {
+-		return false;
+-	} else if (const auto chat = _peer->asChat()) {
+-		return !chat->canDeleteMessages();
+-	} else if (const auto channel = _peer->asChannel()) {
+-		return !channel->canDeleteMessages();
+-	}
+-	return true;
++	return false;
+ }
+ 
+ void HistoryInner::messagesReceived(
+@@ -3978,12 +3967,12 @@
+ }
+ 
+ bool HistoryInner::hasCopyRestriction(HistoryItem *item) const {
+-	return !_peer->allowsForwarding() || (item && item->forbidsForward());
++	return false;
+ }
+ 
+ bool HistoryInner::hasCopyMediaRestriction(
+ 		not_null<HistoryItem*> item) const {
+-	return hasCopyRestriction(item) || item->forbidsSaving();
++	return false;
+ }
+ 
+ bool HistoryInner::showCopyRestriction(HistoryItem *item) {
+@@ -4011,18 +4000,7 @@
+ }
+ 
+ bool HistoryInner::hasCopyRestrictionForSelected() const {
+-	if (hasCopyRestriction()) {
+-		return true;
+-	}
+-	for (const auto &item : _selected) {
+-		if (item && item->forbidsForward()) {
+-			return true;
+-		}
+-	}
+-	const auto textItem = hasSelectedText()
+-		? _selectedTextItem
+-		: _widgetSelection->item();
+-	return textItem && textItem->forbidsForward();
++	return false;
+ }
+ 
+ bool HistoryInner::showCopyRestrictionForSelected() {
+diff --git a/Telegram/SourceFiles/history/history_item.cpp b/Telegram/SourceFiles/history/history_item.cpp
+index 55e1def..745338c 100644
+--- a/Telegram/SourceFiles/history/history_item.cpp
++++ b/Telegram/SourceFiles/history/history_item.cpp
+@@ -2358,13 +2358,6 @@ bool HistoryItem::forbidsForward() const {
+ }
+ 
+ bool HistoryItem::forbidsSaving() const {
+-	if (forbidsForward()) {
+-		return true;
+-	} else if (_media && _media->ttlSeconds()) {
+-		return true;
+-	} else if (const auto invoice = _media ? _media->invoice() : nullptr) {
+-		return HasExtendedMedia(*invoice);
+-	}
+ 	return false;
+ }
+ 
+diff --git a/Telegram/SourceFiles/history/view/history_view_list_widget.cpp b/Telegram/SourceFiles/history/view/history_view_list_widget.cpp
+--- a/Telegram/SourceFiles/history/view/history_view_list_widget.cpp
++++ b/Telegram/SourceFiles/history/view/history_view_list_widget.cpp
+@@ -2371,13 +2371,11 @@
+ }
+ 
+ bool ListWidget::hasCopyRestriction(HistoryItem *item) const {
+-	return _delegate->listCopyRestrictionType(item)
+-		!= CopyRestrictionType::None;
++	return false;
+ }
+ 
+ bool ListWidget::hasCopyMediaRestriction(not_null<HistoryItem*> item) const {
+-	return _delegate->listCopyMediaRestrictionType(item)
+-		!= CopyRestrictionType::None;
++	return false;
+ }
+ 
+ bool ListWidget::showCopyRestriction(HistoryItem *item) {
+@@ -2400,22 +2398,6 @@
+ }
+ 
+ bool ListWidget::hasCopyRestrictionForSelected() const {
+-	if (hasCopyRestriction()) {
+-		return true;
+-	}
+-	if (_selected.empty()) {
+-		if ((_selectedTextItem && _selectedTextItem->forbidsForward())
+-			|| _widgetSelection->copyRestricted()) {
+-			return true;
+-		}
+-	}
+-	for (const auto &[itemId, selection] : _selected) {
+-		if (const auto item = session().data().message(itemId)) {
+-			if (item->forbidsForward()) {
+-				return true;
+-			}
+-		}
+-	}
+ 	return false;
+ }
+ 
+@@ -2435,9 +2417,7 @@
+ }
+ 
+ bool ListWidget::hasSelectRestriction() const {
+-	return session().frozen()
+-		|| (_delegate->listSelectRestrictionType()
+-			!= CopyRestrictionType::None);
++	return false;
+ }
+ 
+ Element *ListWidget::lookupItemByY(int y) const {
+diff --git a/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp b/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp
+index fa0d6ed..a569215 100644
+--- a/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp
++++ b/Telegram/SourceFiles/history/view/history_view_top_bar_widget.cpp
+@@ -1244,15 +1244,14 @@ void TopBarWidget::updateMembersShowArea() {
+ }
+ 
+ bool TopBarWidget::showSelectedState() const {
+-	return (_selectedCount > 0)
+-		&& (_canDelete || _canForward || _canSendNow);
++	return _selectedCount > 0;
+ }
+ 
+ void TopBarWidget::showSelected(SelectedState state) {
+ 	auto canDelete = (state.count > 0 && state.count == state.canDeleteCount);
+ 	auto canForward = (state.count > 0 && state.count == state.canForwardCount);
+ 	auto canSendNow = (state.count > 0 && state.count == state.canSendNowCount);
+-	auto count = (!canDelete && !canForward && !canSendNow) ? 0 : state.count;
++	auto count = state.count;
+ 	if (_selectedCount == count
+ 		&& _canDelete == canDelete
+ 		&& _canForward == canForward
+diff --git a/Telegram/SourceFiles/info/global_media/info_global_media_provider.cpp b/Telegram/SourceFiles/info/global_media/info_global_media_provider.cpp
+index 168d33485ed439fccb084fc33542b90c32063244..2c435aa220148157d7ab02fc7e2f951e9b308d95 100644
+--- a/Telegram/SourceFiles/info/global_media/info_global_media_provider.cpp
++++ b/Telegram/SourceFiles/info/global_media/info_global_media_provider.cpp
+@@ -665,7 +665,7 @@ Media::ListItemSelectionData Provider::computeSelectionData(
+ bool Provider::allowSaveFileAs(
+ 		not_null<const HistoryItem*> item,
+ 		not_null<DocumentData*> document) {
+-	return item->allowsForward();
++	return !item->forbidsSaving();
+ }
+ 
+ QString Provider::showInFolderPath(
+diff --git a/Telegram/SourceFiles/info/media/info_media_list_widget.cpp b/Telegram/SourceFiles/info/media/info_media_list_widget.cpp
+index 33901296f984d9fe8bfbc07860f30a64c5d48f1a..8bac5276234b810134268b5df99e740a8783cfa3 100644
+--- a/Telegram/SourceFiles/info/media/info_media_list_widget.cpp
++++ b/Telegram/SourceFiles/info/media/info_media_list_widget.cpp
+@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "layout/layout_selection.h"
+ #include "data/data_media_types.h"
+ #include "data/data_photo.h"
++#include "data/data_photo_media.h"
+ #include "data/data_chat.h"
+ #include "data/data_channel.h"
+ #include "data/data_chat_participant_status.h"
+@@ -91,6 +92,50 @@ namespace {
+ 
+ constexpr auto kMediaCountForSearch = 10;
+ 
++void SavePhotoToFile(not_null<PhotoData*> photo, FullMsgId contextId) {
++	if (photo->isNull() || photo->extendedMediaPreview()) {
++		return;
++	}
++	const auto media = photo->createMediaView();
++	FileDialog::GetWritePath(
++		Core::App().getFileDialogParent(),
++		tr::lng_save_photo(tr::now),
++		u"JPEG Image (*.jpg);;"_q + FileDialog::AllFilesFilter(),
++		filedialogDefaultName(u"photo"_q, u".jpg"_q),
++		crl::guard(&photo->session(), [=](const QString &result) {
++			if (result.isEmpty()) {
++				return;
++			}
++			if (!media->loaded()) {
++				photo->clearFailed(Data::PhotoSize::Large);
++				photo->load(contextId);
++			}
++			if (media->loaded()) {
++				media->saveToFile(result);
++				return;
++			} else if (photo->failed(Data::PhotoSize::Large)
++				|| photo->cancelled()) {
++				return;
++			}
++
++			const auto lifetime = photo->session().lifetime(
++			).make_state<rpl::lifetime>();
++			const auto saveIfReady = [=] {
++				if (media->loaded()) {
++					media->saveToFile(result);
++					lifetime->destroy();
++				} else if (photo->failed(Data::PhotoSize::Large)
++					|| photo->cancelled()) {
++					lifetime->destroy();
++				}
++			};
++			photo->owner().photoLoadProgress(
++			) | rpl::filter([=](not_null<PhotoData*> updated) {
++				return updated == photo;
++			}) | rpl::on_next(saveIfReady, *lifetime);
++		}));
++}
++
+ } // namespace
+ 
+ struct ListWidget::DateBadge {
+@@ -1501,7 +1546,12 @@ void ListWidget::showContextMenu(
+ 	const auto rowDocument = _overLayout
+ 		? _overLayout->getDocument()
+ 		: nullptr;
+-	const auto document = rowDocument ? rowDocument : lnkDocument;
++	const auto media = item->media();
++	const auto document = rowDocument ? rowDocument
++		: lnkDocument ? lnkDocument
++		: media ? media->document() : nullptr;
++	const auto photo = lnkPhoto ? lnkPhoto
++		: media ? media->photo() : nullptr;
+ 	using ExternalState = Data::DownloadManager::ExternalLoadingState;
+ 	const auto externalState = _controller->isDownloads()
+ 		? Core::App().downloadManager().loadingExternalState(item)
+@@ -1547,6 +1597,19 @@ void ListWidget::showContextMenu(
+ 					_controller->parentController());
+ 			}
+ 		}
++	} else if (photo
++		&& item->isHistoryEntry()
++		&& !item->forbidsSaving()
++		&& !photo->isNull()
++		&& !photo->extendedMediaPreview()) {
++		const auto contextId = item->fullId();
++		_contextMenu->addAction(
++			tr::lng_context_save_image(tr::now),
++			base::fn_delayed(
++				st::defaultDropdownMenu.menu.ripple.hideDuration,
++				this,
++				[=] { SavePhotoToFile(photo, contextId); }),
++			&st::menuIconSaveImage);
+ 	} else if (link && !lnkPhoto) {
+ 		const auto actionText = link->copyToClipboardContextItemText();
+ 		if (!actionText.isEmpty()) {
+diff --git a/Telegram/SourceFiles/info/media/info_media_provider.cpp b/Telegram/SourceFiles/info/media/info_media_provider.cpp
+index 43bfa6e1c577a4c621fb082e66df855b2796e5a6..6d3ba73e1950c490d6eabf222f4bf4ad1f64ef8c 100644
+--- a/Telegram/SourceFiles/info/media/info_media_provider.cpp
++++ b/Telegram/SourceFiles/info/media/info_media_provider.cpp
+@@ -79,16 +79,7 @@ Type Provider::type() {
+ }
+ 
+ bool Provider::hasSelectRestriction() {
+-	if (_peer->session().frozen()) {
+-		return true;
+-	} else if (_peer->allowsForwarding()) {
+-		return false;
+-	} else if (const auto chat = _peer->asChat()) {
+-		return !chat->canDeleteMessages();
+-	} else if (const auto channel = _peer->asChannel()) {
+-		return !channel->canDeleteMessages();
+-	}
+-	return true;
++	return false;
+ }
+ 
+ rpl::producer<bool> Provider::hasSelectRestrictionChanges() {
+@@ -591,7 +582,7 @@ ListItemSelectionData Provider::computeSelectionData(
+ bool Provider::allowSaveFileAs(
+ 		not_null<const HistoryItem*> item,
+ 		not_null<DocumentData*> document) {
+-	return item->allowsForward();
++	return !item->forbidsSaving();
+ }
+ 
+ QString Provider::showInFolderPath(
+diff --git a/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp b/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp
+--- a/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp
++++ b/Telegram/SourceFiles/media/view/media_view_overlay_widget.cpp
+@@ -1474,17 +1474,7 @@
+ }
+ 
+ bool OverlayWidget::hasCopyMediaRestriction(bool skipPremiumCheck) const {
+-	if (const auto story = _stories ? _stories->story() : nullptr) {
+-		if (story->call()) {
+-			return true;
+-		}
+-		return skipPremiumCheck
+-			? !story->canDownloadIfPremium()
+-			: !story->canDownloadChecked();
+-	}
+-	return (_history && !_history->peer->allowsForwarding())
+-		|| (_message && _message->forbidsSaving())
+-		|| (_history && _screenshotProtected);
++	return false;
+ }
+ 
+ bool OverlayWidget::showCopyMediaRestriction(bool skipPRemiumCheck) {

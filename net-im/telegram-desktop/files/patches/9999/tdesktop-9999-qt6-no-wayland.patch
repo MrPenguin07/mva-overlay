@@ -1,0 +1,75 @@
+Allow disabling Wayland integration for Qt6 builds
+
+Refresh the C++ hunks for the current telegram-desktop dev branch.
+Preserve the private-Qt-API checks and cover the newer foreign-parent path.
+Disable both Qt and KWaylandExtras activation-token implementations when
+DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION is defined.
+
+The CMake hunks retain the original Gentoo toggle.
+
+https://bugs.gentoo.org/928451
+https://github.com/desktop-app/cmake_helpers/commit/a428df5440e76a726abc30924766ac7da0cb381c
+
+--- a/Telegram/lib_base/base/platform/linux/base_linux_xdg_activation_token.cpp
++++ b/Telegram/lib_base/base/platform/linux/base_linux_xdg_activation_token.cpp
+@@ -14 +14,2 @@
+-#ifndef DESKTOP_APP_DISABLE_PRIVATE_QT_API
++#ifndef DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION
++#ifndef DESKTOP_APP_DISABLE_PRIVATE_QT_API
+@@ -18 +19,2 @@
+-#endif // DESKTOP_APP_DISABLE_PRIVATE_QT_API && __has_include(<KWaylandExtras>)
++#endif // DESKTOP_APP_DISABLE_PRIVATE_QT_API && __has_include(<KWaylandExtras>)
++#endif // !DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION
+@@ -22 +24,4 @@
+-void RunWithXdgActivationToken(Fn<void(QString)> callback) {
++void RunWithXdgActivationToken(Fn<void(QString)> callback) {
++#ifdef DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION
++	callback({});
++#else
+@@ -63 +68,2 @@
+-#endif // (DESKTOP_APP_DISABLE_PRIVATE_QT_API || !wayland) && !__has_include(<KWaylandExtras>)
++#endif // (DESKTOP_APP_DISABLE_PRIVATE_QT_API || !wayland) && !__has_include(<KWaylandExtras>)
++#endif // DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION
+--- a/Telegram/lib_ui/ui/platform/linux/ui_utility_linux.cpp
++++ b/Telegram/lib_ui/ui/platform/linux/ui_utility_linux.cpp
+@@ -210 +210 @@
+-#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
++#if !defined DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+@@ -669 +669 @@ void SetForeignTransientParent(
+-#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0) && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
++#if !defined DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION && QT_VERSION >= QT_VERSION_CHECK(6, 9, 0) && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+@@ -726 +726 @@ bool WindowMarginsSupported() {
+-#if !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
++#if !defined DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION && !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+@@ -751 +751 @@ void SetWindowMargins(not_null<QWidget*> widget, const QMargins &margins) {
+-#if !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
++#if !defined DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION && !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+@@ -767 +767 @@ void ShowWindowMenu(not_null<QWidget*> widget, const QPoint &point) {
+-#if !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
++#if !defined DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION && !defined DESKTOP_APP_DISABLE_PRIVATE_QT_API && defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+--- a/cmake/options.cmake
++++ b/cmake/options.cmake
+@@ -22,6 +22,13 @@
+     )
+ endif()
+ 
++if (DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION)
++    target_compile_definitions(common_options
++    INTERFACE
++       DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION
++    )
++endif()
++
+ if (WIN32)
+     include(cmake/options_win.cmake)
+ elseif (APPLE)
+--- a/cmake/variables.cmake
++++ b/cmake/variables.cmake
+@@ -32,6 +32,7 @@
+ option(DESKTOP_APP_TEST_APPS "Build test apps, development only." OFF)
+ option(DESKTOP_APP_LOTTIE_USE_CACHE "Use caching in lottie animations." ON)
++cmake_dependent_option(DESKTOP_APP_DISABLE_WAYLAND_INTEGRATION "Disable all code for Wayland integration." OFF LINUX ON)
+ cmake_dependent_option(DESKTOP_APP_USE_ALLOCATION_TRACER "Use simple allocation tracer." OFF LINUX OFF)
+ option(DESKTOP_APP_USE_PACKAGED_FONTS "Use preinstalled fonts instead of bundled patched ones." OFF)
+ option(DESKTOP_APP_DISABLE_CRASH_REPORTS "Disable crash report generation." ${no_special_target})
+ option(DESKTOP_APP_DISABLE_AUTOUPDATE "Disable autoupdate." ${disable_autoupdate})

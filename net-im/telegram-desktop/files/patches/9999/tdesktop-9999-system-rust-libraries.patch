@@ -1,0 +1,17 @@
+Skip the aggregate Rust library probe for Gentoo system-library builds
+
+Gentoo links the separately packaged tlottie and wallet_engine libraries,
+so do not search for the aggregate tdesktop_rust library. This also avoids
+the ebuild's find_library(... REQUIRED) rewrite making the probe fatal.
+
+Matches Gentoo's empty-module approach:
+https://github.com/gentoo/gentoo/blob/master/net-im/telegram-desktop/telegram-desktop-7.3.5.ebuild
+
+--- a/cmake/external/tdesktop_rust/CMakeLists.txt
++++ b/cmake/external/tdesktop_rust/CMakeLists.txt
+@@ -5 +5,4 @@
+-# https://github.com/desktop-app/legal/blob/master/LEGAL
++# https://github.com/desktop-app/legal/blob/master/LEGAL
++
++# Use the separately packaged Rust libraries instead of this aggregate.
++return()
